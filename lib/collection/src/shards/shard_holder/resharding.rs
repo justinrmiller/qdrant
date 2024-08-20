@@ -1,18 +1,24 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Deref as _;
 use std::sync::Arc;
 
-use segment::types::{Condition, Filter, ShardKey};
+use segment::types::{Condition, CustomIdCheckerCondition as _, Filter, ShardKey};
 
 use super::ShardHolder;
 use crate::hash_ring::{self, HashRingRouter};
 use crate::operations::cluster_ops::ReshardingDirection;
 use crate::operations::types::{CollectionError, CollectionResult};
+use crate::operations::{point_ops, CollectionUpdateOperations};
 use crate::shards::replica_set::{ReplicaState, ShardReplicaSet};
 use crate::shards::resharding::{ReshardKey, ReshardStage, ReshardState};
+use crate::shards::shard::ShardId;
 
 impl ShardHolder {
+    pub fn resharding_state(&self) -> Option<ReshardState> {
+        self.resharding_state.read().clone()
+    }
+
     pub fn check_start_resharding(&mut self, resharding_key: &ReshardKey) -> CollectionResult<()> {
         let ReshardKey {
             direction,
@@ -364,6 +370,77 @@ impl ShardHolder {
         Ok(())
     }
 
+    pub fn split_by_mode(
+        &self,
+        shard_id: ShardId,
+        operation: CollectionUpdateOperations,
+    ) -> OperationsByMode {
+        let Some(state) = self.resharding_state() else {
+            return operation.into();
+        };
+
+        // Target shard of the resharding operation. This is the shard that:
+        // - *created* during resharding *up*
+        // - *deleted* during resharding *down*
+        let is_target_shard = shard_id == state.shard_id;
+
+        // Shard that will be *receiving* migrated points during resharding:
+        // - *target* shard during resharding *up*
+        // - *non* target shards during resharding *down*
+        let is_receiver_shard = match state.direction {
+            ReshardingDirection::Up => is_target_shard,
+            ReshardingDirection::Down => !is_target_shard,
+        };
+
+        // Shard that will be *sending* migrated points during resharding:
+        // - *non* target shards during resharding *up*
+        // - *target* shard during resharding *down*
+        let is_sender_shard = !is_receiver_shard;
+
+        // We apply resharding pre-filter:
+        //
+        // - on *receiver* shards during `MigratingPoints` stage
+        // - and on *sender* shards during `ReadHashRingCommitted` stage when resharding *up*
+        let should_filter = (is_receiver_shard && state.stage == ReshardStage::MigratingPoints)
+            || (is_sender_shard
+                && state.stage >= ReshardStage::ReadHashRingCommitted
+                && state.direction == ReshardingDirection::Up);
+
+        if !should_filter {
+            return operation.into();
+        }
+
+        let filter = self
+            .resharding_filter_impl()
+            .expect("resharding filter is available when resharding is in progress");
+
+        let point_ids = operation.point_ids();
+
+        if point_ids.is_empty() {
+            return operation.into();
+        }
+
+        let target_point_ids: HashSet<_> = point_ids
+            .iter()
+            .copied()
+            .filter(|&point_id| filter.check(point_id))
+            .collect();
+
+        if target_point_ids.is_empty() {
+            operation.into()
+        } else if target_point_ids.len() == point_ids.len() {
+            OperationsByMode::default().update_existing(operation)
+        } else {
+            let mut update_all = operation.clone();
+            update_all.retain_point_ids(|point_id| !target_point_ids.contains(&point_id));
+
+            let mut update_existing = operation;
+            update_existing.retain_point_ids(|point_id| target_point_ids.contains(&point_id));
+
+            OperationsByMode::from(update_all).update_existing(update_existing)
+        }
+    }
+
     /// A filter that excludes points migrated to a different shard, as part of resharding.
     ///
     /// `None` if resharding is not active or if the read hash ring is not committed yet.
@@ -395,6 +472,39 @@ impl ShardHolder {
         };
 
         Some(hash_ring::HashRingFilter::new(ring.clone(), state.shard_id))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct OperationsByMode {
+    pub update_all: Vec<CollectionUpdateOperations>,
+    pub update_existing: Vec<CollectionUpdateOperations>,
+}
+
+impl OperationsByMode {
+    pub fn update_existing(mut self, operation: CollectionUpdateOperations) -> Self {
+        match operation {
+            CollectionUpdateOperations::PointOperation(
+                point_ops::PointOperations::UpsertPoints(operation),
+            ) => {
+                self.update_existing = operation.into_update_only();
+            }
+
+            operation => {
+                self.update_existing = vec![operation];
+            }
+        }
+
+        self
+    }
+}
+
+impl From<CollectionUpdateOperations> for OperationsByMode {
+    fn from(operation: CollectionUpdateOperations) -> Self {
+        Self {
+            update_all: vec![operation],
+            update_existing: Vec::new(),
+        }
     }
 }
 

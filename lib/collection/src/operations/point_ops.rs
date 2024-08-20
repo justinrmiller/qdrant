@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::iter;
 
 use api::rest::{BatchVectorStruct, ShardKeySelector, VectorStruct};
 use itertools::izip;
@@ -12,9 +13,15 @@ use serde::{Deserialize, Serialize};
 use strum::{EnumDiscriminants, EnumIter};
 use validator::Validate;
 
-use super::{point_to_shards, split_iter_by_shard, OperationToShard, SplitByShard};
+use super::payload_ops::SetPayloadOp;
+use super::vector_ops::{PointVectors, UpdateVectorsOp};
+use super::{
+    point_to_shards, split_iter_by_shard, CollectionUpdateOperations, OperationToShard,
+    SplitByShard,
+};
 use crate::hash_ring::HashRingRouter;
 use crate::operations::types::Record;
+use crate::operations::{payload_ops, vector_ops};
 use crate::shards::shard::ShardId;
 
 /// Defines write ordering guarantees for collection operations
@@ -214,6 +221,123 @@ pub enum PointInsertOperationsInternal {
     /// Insert points from a list
     #[serde(rename = "points")]
     PointsList(Vec<PointStruct>),
+}
+
+impl PointInsertOperationsInternal {
+    pub fn into_update_only(self) -> Vec<CollectionUpdateOperations> {
+        let mut operations = Vec::new();
+
+        match self {
+            Self::PointsBatch(batch) => {
+                let mut update_vectors = UpdateVectorsOp { points: Vec::new() };
+
+                match batch.vectors {
+                    BatchVectorStruct::Single(vectors) => {
+                        let ids = batch.ids.iter().copied();
+                        let vectors = vectors.into_iter().map(VectorStruct::Single);
+
+                        update_vectors.points = ids
+                            .zip(vectors)
+                            .map(|(id, vector)| PointVectors { id, vector })
+                            .collect();
+                    }
+
+                    BatchVectorStruct::MultiDense(vectors) => {
+                        let ids = batch.ids.iter().copied();
+                        let vectors = vectors.into_iter().map(VectorStruct::MultiDense);
+
+                        update_vectors.points = ids
+                            .zip(vectors)
+                            .map(|(id, vector)| PointVectors { id, vector })
+                            .collect();
+                    }
+
+                    BatchVectorStruct::Named(batch_vectors) => {
+                        let ids = batch.ids.iter().copied();
+
+                        let mut batch_vectors: HashMap<_, _> = batch_vectors
+                            .into_iter()
+                            .map(|(name, vectors)| (name, vectors.into_iter()))
+                            .collect();
+
+                        let vectors = iter::repeat(()).filter_map(move |_| {
+                            let mut point_vectors =
+                                HashMap::with_capacity(batch_vectors.capacity());
+
+                            for (vector_name, vectors) in batch_vectors.iter_mut() {
+                                point_vectors.insert(vector_name.clone(), vectors.next()?);
+                            }
+
+                            Some(VectorStruct::Named(point_vectors))
+                        });
+
+                        update_vectors.points = ids
+                            .zip(vectors)
+                            .map(|(id, vector)| PointVectors { id, vector })
+                            .collect();
+                    }
+                }
+
+                let update_vectors = vector_ops::VectorOperations::UpdateVectors(update_vectors);
+                let update_vectors = CollectionUpdateOperations::VectorOperation(update_vectors);
+
+                operations.push(update_vectors);
+
+                if let Some(payloads) = batch.payloads {
+                    let ids = batch.ids.iter().copied();
+
+                    for (id, payload) in ids.zip(payloads) {
+                        if let Some(payload) = payload {
+                            let set_payload = SetPayloadOp {
+                                points: Some(vec![id]),
+                                payload,
+                                filter: None,
+                                key: None,
+                            };
+
+                            let set_payload = payload_ops::PayloadOps::SetPayload(set_payload);
+                            let set_payload =
+                                CollectionUpdateOperations::PayloadOperation(set_payload);
+
+                            operations.push(set_payload);
+                        }
+                    }
+                }
+            }
+
+            Self::PointsList(points) => {
+                let mut update_vectors = UpdateVectorsOp { points: Vec::new() };
+
+                for point in points {
+                    update_vectors.points.push(PointVectors {
+                        id: point.id,
+                        vector: point.vector,
+                    });
+
+                    if let Some(payload) = point.payload {
+                        let set_payload = SetPayloadOp {
+                            points: Some(vec![point.id]),
+                            payload,
+                            filter: None,
+                            key: None,
+                        };
+
+                        let set_payload = payload_ops::PayloadOps::SetPayload(set_payload);
+                        let set_payload = CollectionUpdateOperations::PayloadOperation(set_payload);
+
+                        operations.push(set_payload);
+                    }
+                }
+
+                let update_vectors = vector_ops::VectorOperations::UpdateVectors(update_vectors);
+                let update_vectors = CollectionUpdateOperations::VectorOperation(update_vectors);
+
+                operations.insert(0, update_vectors);
+            }
+        }
+
+        operations
+    }
 }
 
 impl Validate for PointInsertOperationsInternal {

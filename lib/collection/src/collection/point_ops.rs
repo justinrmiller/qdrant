@@ -145,13 +145,12 @@ impl Collection {
         let mut results = tokio::task::spawn(async move {
             let _update_lock = update_lock;
 
-            let updates: FuturesUnordered<_> = shard_holder
-                .split_by_shard(operation, &shard_keys_selection)?
-                .into_iter()
-                .map(move |(shard, operation)| {
-                    shard.update_with_consistency(operation, wait, ordering)
-                })
-                .collect();
+            let updates = FuturesUnordered::new();
+            let operations = shard_holder.split_by_shard(operation, &shard_keys_selection)?;
+
+            for (shard, operation) in operations {
+                updates.push(shard.update_with_consistency(operation, wait, ordering));
+            }
 
             let results: Vec<_> = updates.collect().await;
 

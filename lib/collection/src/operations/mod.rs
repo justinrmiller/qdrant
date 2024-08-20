@@ -145,6 +145,19 @@ pub enum CollectionUpdateOperations {
     FieldIndexOperation(FieldIndexOperations),
 }
 
+impl CollectionUpdateOperations {
+    pub fn point_ids(&self) -> Vec<ExtendedPointId> {
+        todo!()
+    }
+
+    pub fn retain_point_ids<F>(&mut self, filter: F)
+    where
+        F: Fn(ExtendedPointId) -> bool,
+    {
+        todo!()
+    }
+}
+
 /// A mapping of operation to shard.
 /// Is a result of splitting one operation into several shards by corresponding PointIds
 pub enum OperationToShard<O> {
