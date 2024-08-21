@@ -149,7 +149,30 @@ impl Collection {
             let operations = shard_holder.split_by_shard(operation, &shard_keys_selection)?;
 
             for (shard, operation) in operations {
-                updates.push(shard.update_with_consistency(operation, wait, ordering));
+                let operation = shard_holder.split_by_mode(shard.shard_id, operation);
+
+                updates.push(async move {
+                    let mut result = UpdateResult {
+                        operation_id: None,
+                        status: UpdateStatus::Acknowledged,
+                        clock_tag: None,
+                    };
+
+                    for operation in operation.update_all {
+                        result = shard
+                            .update_with_consistency(operation, wait, ordering)
+                            .await?;
+                    }
+
+                    for operation in operation.update_existing {
+                        // TODO(resharding): Ignore "missing point ID(s)" error
+                        result = shard
+                            .update_with_consistency(operation, wait, ordering)
+                            .await?;
+                    }
+
+                    CollectionResult::Ok(result)
+                });
             }
 
             let results: Vec<_> = updates.collect().await;

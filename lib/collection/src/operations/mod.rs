@@ -20,7 +20,7 @@ pub mod vector_params_builder;
 use std::collections::HashMap;
 
 use segment::json_path::JsonPath;
-use segment::types::{ExtendedPointId, PayloadFieldSchema};
+use segment::types::{ExtendedPointId, PayloadFieldSchema, PointIdType};
 use serde::{Deserialize, Serialize};
 use strum::{EnumDiscriminants, EnumIter};
 use validator::Validate;
@@ -146,15 +146,25 @@ pub enum CollectionUpdateOperations {
 }
 
 impl CollectionUpdateOperations {
-    pub fn point_ids(&self) -> Vec<ExtendedPointId> {
-        todo!()
+    pub fn point_ids(&self) -> Vec<PointIdType> {
+        match self {
+            Self::PointOperation(op) => op.point_ids(),
+            Self::VectorOperation(op) => op.point_ids(),
+            Self::PayloadOperation(op) => op.point_ids(),
+            Self::FieldIndexOperation(_) => Vec::new(),
+        }
     }
 
     pub fn retain_point_ids<F>(&mut self, filter: F)
     where
-        F: Fn(ExtendedPointId) -> bool,
+        F: Fn(&PointIdType) -> bool,
     {
-        todo!()
+        match self {
+            Self::PointOperation(op) => op.retain_point_ids(filter),
+            Self::VectorOperation(op) => op.retain_point_ids(filter),
+            Self::PayloadOperation(op) => op.retain_point_ids(filter),
+            Self::FieldIndexOperation(_) => (),
+        }
     }
 }
 

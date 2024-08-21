@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::iter;
 
 use api::rest::{BatchVectorStruct, ShardKeySelector, VectorStruct};
@@ -224,6 +224,55 @@ pub enum PointInsertOperationsInternal {
 }
 
 impl PointInsertOperationsInternal {
+    pub fn point_ids(&self) -> Vec<PointIdType> {
+        match self {
+            Self::PointsBatch(batch) => batch.ids.clone(),
+            Self::PointsList(points) => points.iter().map(|point| point.id).collect(),
+        }
+    }
+
+    pub fn retain_point_ids<F>(&mut self, filter: F)
+    where
+        F: Fn(&PointIdType) -> bool,
+    {
+        match self {
+            Self::PointsBatch(batch) => {
+                let mut retain_indices = HashSet::new();
+
+                retain_with_index(&mut batch.ids, |index, id| {
+                    if filter(id) {
+                        retain_indices.insert(index);
+                        true
+                    } else {
+                        false
+                    }
+                });
+
+                match &mut batch.vectors {
+                    BatchVectorStruct::Single(vectors) => {
+                        retain_with_index(vectors, |index, _| retain_indices.contains(&index));
+                    }
+
+                    BatchVectorStruct::MultiDense(vectors) => {
+                        retain_with_index(vectors, |index, _| retain_indices.contains(&index));
+                    }
+
+                    BatchVectorStruct::Named(vectors) => {
+                        for (_, vectors) in vectors.iter_mut() {
+                            retain_with_index(vectors, |index, _| retain_indices.contains(&index));
+                        }
+                    }
+                }
+
+                if let Some(payload) = &mut batch.payloads {
+                    retain_with_index(payload, |index, _| retain_indices.contains(&index));
+                }
+            }
+
+            Self::PointsList(points) => points.retain(|point| filter(&point.id)),
+        }
+    }
+
     pub fn into_update_only(self) -> Vec<CollectionUpdateOperations> {
         let mut operations = Vec::new();
 
@@ -338,6 +387,19 @@ impl PointInsertOperationsInternal {
 
         operations
     }
+}
+
+fn retain_with_index<T, F>(vec: &mut Vec<T>, mut filter: F)
+where
+    F: FnMut(usize, &T) -> bool,
+{
+    let mut index = 0;
+
+    vec.retain(|item| {
+        let retain = filter(index, item);
+        index += 1;
+        retain
+    });
 }
 
 impl Validate for PointInsertOperationsInternal {
@@ -472,6 +534,27 @@ impl PointOperations {
             PointOperations::DeletePoints { .. } => false,
             PointOperations::DeletePointsByFilter(_) => false,
             PointOperations::SyncPoints(_) => true,
+        }
+    }
+
+    pub fn point_ids(&self) -> Vec<PointIdType> {
+        match self {
+            Self::UpsertPoints(op) => op.point_ids(),
+            Self::DeletePoints { ids } => ids.clone(),
+            Self::DeletePointsByFilter(_) => Vec::new(),
+            Self::SyncPoints(op) => op.points.iter().map(|point| point.id).collect(),
+        }
+    }
+
+    pub fn retain_point_ids<F>(&mut self, filter: F)
+    where
+        F: Fn(&PointIdType) -> bool,
+    {
+        match self {
+            Self::UpsertPoints(op) => op.retain_point_ids(filter),
+            Self::DeletePoints { ids } => ids.retain(filter),
+            Self::DeletePointsByFilter(_) => (),
+            Self::SyncPoints(op) => op.points.retain(|point| filter(&point.id)),
         }
     }
 }

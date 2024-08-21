@@ -432,10 +432,10 @@ impl ShardHolder {
             OperationsByMode::default().update_existing(operation)
         } else {
             let mut update_all = operation.clone();
-            update_all.retain_point_ids(|point_id| !target_point_ids.contains(&point_id));
+            update_all.retain_point_ids(|point_id| !target_point_ids.contains(point_id));
 
             let mut update_existing = operation;
-            update_existing.retain_point_ids(|point_id| target_point_ids.contains(&point_id));
+            update_existing.retain_point_ids(|point_id| target_point_ids.contains(point_id));
 
             OperationsByMode::from(update_all).update_existing(update_existing)
         }
