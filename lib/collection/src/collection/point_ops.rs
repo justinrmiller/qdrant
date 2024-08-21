@@ -165,10 +165,24 @@ impl Collection {
                     }
 
                     for operation in operation.update_existing {
-                        // TODO(resharding): Ignore "missing point ID(s)" error
-                        result = shard
+                        // TODO(resharding): Ignore errors on `update_impl`/`handle_failed_replicas` level
+                        let res = shard
                             .update_with_consistency(operation, wait, ordering)
-                            .await?;
+                            .await;
+
+                        match &res {
+                            Err(CollectionError::PointNotFound { .. }) => continue,
+
+                            Err(CollectionError::NotFound { what }) => {
+                                if what.starts_with("No point with id") && what.ends_with("found") {
+                                    continue;
+                                }
+                            }
+
+                            _ => (),
+                        }
+
+                        result = res?;
                     }
 
                     CollectionResult::Ok(result)

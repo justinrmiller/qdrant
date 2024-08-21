@@ -458,6 +458,8 @@ impl ShardReplicaSet {
                 continue;
             }
 
+            // TODO(resharding): Ignore `PointNotFound`/`NotFound` errors during resharding
+
             if err.is_transient() || peer_state == ReplicaState::Initializing {
                 // If the error is transient, we should not deactivate the peer
                 // before allowing other operations to continue.
