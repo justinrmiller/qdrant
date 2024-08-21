@@ -344,7 +344,8 @@ impl PointInsertOperationsInternal {
                                 key: None,
                             };
 
-                            let set_payload = payload_ops::PayloadOps::SetPayload(set_payload);
+                            let set_payload =
+                                payload_ops::PayloadOps::OverwritePayload(set_payload);
                             let set_payload =
                                 CollectionUpdateOperations::PayloadOperation(set_payload);
 
@@ -371,7 +372,7 @@ impl PointInsertOperationsInternal {
                             key: None,
                         };
 
-                        let set_payload = payload_ops::PayloadOps::SetPayload(set_payload);
+                        let set_payload = payload_ops::PayloadOps::OverwritePayload(set_payload);
                         let set_payload = CollectionUpdateOperations::PayloadOperation(set_payload);
 
                         operations.push(set_payload);
