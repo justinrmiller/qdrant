@@ -984,6 +984,18 @@ impl CollectionError {
             Self::ObjectStoreError { .. } => false,
         }
     }
+
+    pub fn is_missing_point(&self) -> bool {
+        match self {
+            CollectionError::PointNotFound { .. } => true,
+
+            CollectionError::NotFound { what } => {
+                what.starts_with("No point with id") && what.ends_with("found")
+            }
+
+            _ => false,
+        }
+    }
 }
 
 impl From<SystemTimeError> for CollectionError {

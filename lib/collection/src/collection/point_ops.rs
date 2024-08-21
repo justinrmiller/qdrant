@@ -108,7 +108,7 @@ impl Collection {
                     }
 
                     shard
-                        .update_with_consistency(operation.operation, wait, ordering)
+                        .update_with_consistency(operation.operation, wait, ordering, false)
                         .await
                         .map(Some)
                 }
@@ -160,26 +160,19 @@ impl Collection {
 
                     for operation in operation.update_all {
                         result = shard
-                            .update_with_consistency(operation, wait, ordering)
+                            .update_with_consistency(operation, wait, ordering, false)
                             .await?;
                     }
 
                     for operation in operation.update_existing {
-                        // TODO(resharding): Ignore errors on `update_impl`/`handle_failed_replicas` level
                         let res = shard
-                            .update_with_consistency(operation, wait, ordering)
+                            .update_with_consistency(operation, wait, ordering, true)
                             .await;
 
-                        match &res {
-                            Err(CollectionError::PointNotFound { .. }) => continue,
-
-                            Err(CollectionError::NotFound { what }) => {
-                                if what.starts_with("No point with id") && what.ends_with("found") {
-                                    continue;
-                                }
+                        if let Err(err) = &res {
+                            if err.is_missing_point() {
+                                continue;
                             }
-
-                            _ => (),
                         }
 
                         result = res?;
